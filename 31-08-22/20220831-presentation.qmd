@@ -1,25 +1,180 @@
 ---
-title: "Stability Selection for Variable Selection (STAT) and Feature Selection (ML) : Can we bridge the gap?"
+title: "Stability in Variable Selection"
 author: "Connor Smith"
-format: revealjs
+format: 
+  revealjs: 
+    theme: dark
+    footer: "Slides by Connor Smith"
+    width: 1920
+    height: 1080
 editor: visual
+bibliography: references.bib
 ---
 
-## Quarto
+## Variable Solution Path
 
-Quarto enables you to weave together content and executable code into a finished presentation. To learn more about Quarto presentations see <https://quarto.org/docs/presentations/>.
+Consider the very simple design matrix $\mathbf{X}$ with $p = 5$ and $n = 50$.
 
-## Bullets
+A possible solution path through this model space would be:
 
-When you click the **Render** button a document will be generated that includes:
+$$
+\emptyset \rightarrow \{1\} \rightarrow \{1,3\} \rightarrow \{1,2,3\} \rightarrow \{1,2,3,5\} \rightarrow \{1,2,3,4,5\}
+$$
 
--   Content authored with markdown
--   Output from executable code
+where each of the steps represents a model containing the variables of the corresponding index. For this example we will say $\{1,3\}$ minimizes
 
-## Code
+::: panel-tabset
+## Optimum Model
 
-When you click the **Render** button a presentation will be generated that includes both content and the output of embedded code. You can embed code like this:
+$$
+\mathbf{Z}(d) = (z_{1},\ldots,z_{B})
+$$ where $z_{b}$ is the binary vector of the optimum model i.e. $(1,0,1,0,0)^{\top}$.
+
+## Vectors
+
+We can now define the following vectors for the $b^{\textrm{th}}$ resample (solution path above):
+
+$$
+z_{b}(1) = (1,0,0,0,0)^{\top}
+$$
+
+$$
+z_{b}(4) = (1,1,1,0,1)^{\top}
+$$
+
+## Matrix
+
+We can also define the following matrix for the best models of size $d$ from each resample:
+
+$$
+\mathbf{Z}(d) = (z_{1}(d),\ldots,z_{B}(d))
+$$
+
+where $d = 0,\ldots,5$.
+:::
+
+::: aside
+Solution paths are usually not constrained. For current work each step increases the model size by 1 and all model sizes exist in the path.
+:::
+
+## Stability Review
+
+![2002 - 2018 Similarity Measures [@JMLR:v18:17-514]](stability.PNG)
+
+## Stability
+
+The new stability estimator presented in @JMLR:v18:17-514 is defined as follows:
+
+$$
+\hat{\Phi}(Z) = 1 - \frac{\frac{B}{p(B-1)}\sum_{j = 1}^{p}\hat{p}_{j}(1-\hat{p}_{j})}{\frac{\bar{k}}{p}(1-\frac{\bar{k}}{p})}
+$$
+
+where $k_{b}$ is the size of the $b^{\textrm{th}}$ model and $\bar{k}$ is the average model size. We calculate $\hat{p}_{j}$ by finding the average of the $j^{\textrm{th}}$ row of $\mathbf{Z}(d)$.
+
+## Fixed Dimension
+
+Under the previous conditions and restricting the models to size $d$, this simplifies to:
+
+$$
+\hat{\Phi}(Z(d)) = 1 - \frac{\frac{B}{(B-1)}\sum_{j = 1}^{p}\hat{p}_{j}(1-\hat{p}_{j})}{d(1-\frac{d}{p})}
+$$
+
+and we are also able to calculate the variance (see @JMLR:v18:17-514 )
+
+## Variable Selection
 
 ```{r}
-1 + 1
+library(magrittr)
+
+## Simulating data
+set.seed(1234)
+n <- 100
+p <- 10
+k <- 1:p
+s <- 2
+beta <- c(rnorm(n = 4), rep(0, p-4))
+x <- matrix(rnorm(n*p), ncol = p)
+colnames(x) <- paste0("X", 1:p)
+y <- x%*%beta + rnorm(n = n, sd = s)
+
+df <- data.frame(x, y)
+
+
+## Main Function
+stab_est <- function(data, B = 100){
+  p <- NCOL(data)-1
+  n <- NROW(data)
+  # Weight Vector
+  wB <- rexp(n = B*n, rate = 1) %>%
+    matrix(data = ., nrow = B, ncol = n)
+  coefIntB <- matrix(data = NA_real_, nrow = B, ncol = p + 1)
+  tstatIntB <- matrix(data = NA_real_, nrow = B, ncol = p + 1)
+  modelD <- replicate(n = p, expr = matrix(data = NA_real_, nrow = B, ncol = p), simplify = FALSE)
+  # Full Model
+  lmFit <- stats::lm(y ~ ., data = df)
+  varNames <- names(x = coef(lmFit))
+  colnames(coefIntB) <- varNames
+  colnames(tstatIntB) <- varNames
+  for(b in 1:B){
+    lmBoot <- stats::lm(y ~ ., data = df, weights  = wB[b,])
+    coefIntB[b,] <- lmBoot %>% coef(.)
+    tstatIntB[b,] <- summary(lmBoot)$coefficients[,3] %>% abs()
+  }
+  coefB <- coefIntB[,-1]
+  tstatB <- tstatIntB[,-1]
+  rankB <- p + 1 - apply(X = tstatB, MARGIN = 1, FUN = rank)
+  for(j in 1:p){
+    modelD[[j]] <- rankB <= j
+  }
+  pjD <- lapply(X = modelD, FUN = rowSums)
+  stabM <- rep(x = NA_real_, times = p)
+
+  for(d in 1:p){
+    stabM[d] <- 1 - B/(B-1)*sum(pjD[[d]]/B*(1 - pjD[[d]]/B))/(d*(1-d/p))
+  }
+
+  rho <- matrix(data = NA_real_, nrow = B, ncol = p)
+  for(d in 1:p){
+    for(b in 1:B){
+      rho[b,d] <- 1/((d/p)*(1-d/p))*(1/p*sum(modelD[[d]][,b]*pjD[[d]]/B)-d^2/p^2 + stabM[d]/2*(2*d^2/p^2-2*d/p+1))
+    }
+  }
+
+  varRho <- rep(x = NA_real_, times = p)
+
+  for(d in 1:p){
+    varRho[d] <- 4/B^2*sum((rho[,d] - mean(rho[,d]))^2)
+  }
+
+  CIu <- stabM +1.96*sqrt(varRho)
+  CIl <- stabM -1.96*sqrt(varRho)
+  CI <- rbind(CIl, CIu)
+
+  tStat <- rep(x = NA_real_, times = p-1)
+
+  for (k in 1:(p-1)){
+    tStat[k] <- (stabM[k+1]-stabM[k])/sqrt(varRho[k+1]+varRho[k])
+  }
+
+  colnames(CI) = varNames[-1]
+
+  return(list(stab = stabM, CI = CI, tStat = tStat, var = varRho, check = rho))
+  }
+ 
+stabEst <- stab_est(df)
+
 ```
+
+Lets set up a very simple example with $n =$ `r n` and $p =$ `r p` with $\beta =$ $($`r round(beta, 3)`$)^{\top}$.
+
+```{r}
+plot(stabEst$stab, xlab = "Dimension", ylab = "Stabilty Measure")
+```
+
+We can also calculate the confidence intervals
+
+```{r}
+knitr::kable(round(stabEst$CI,3))
+```
+
+## References
